@@ -1,0 +1,23 @@
+{
+  "application": "stemdl",
+  "loss": "cross_entropy",
+  "quality": "acc",
+  "depth": 16,
+  "num_classes": 231,
+  "widen_factor": 1,
+  "higher_better": true,
+  "droprate_init": 0.5,
+  "N": 109287,
+  "beta_ema": 0,
+  "device": "cpu",
+  "weight_decay": 0,
+  "lambas": 1.0,
+  "local_rep": false,
+  "temperature": 0.67,
+  "use_reg": true,
+  "budget": 1e-6,
+  "initial_budget": 1e-6,
+  "final_budget": 0.5,
+  "initial_temp": 0.01,
+  "final_temp": 1
+}

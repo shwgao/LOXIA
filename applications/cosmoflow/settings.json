@@ -1,0 +1,23 @@
+{
+  "application": "Cosmoflow",
+  "loss": "mse",
+  "quality": "r2",
+  "n_conv_layers": 5,
+  "n_conv_filters": 8,
+  "conv_kernel": 3,
+  "dropout_rate": 0.5,
+  "droprate_init": 0.5,
+  "N": 1000000,
+  "beta_ema": 0.999,
+  "device": "cpu",
+  "weight_decay": 1,
+  "lambas": 1.0,
+  "local_rep": false,
+  "temperature": 0.67,
+  "use_reg": true,
+  "budget": 1e-6,
+  "initial_budget": 1e-6,
+  "final_budget": 0.5,
+  "initial_temp": 0.01,
+  "final_temp": 1
+}
