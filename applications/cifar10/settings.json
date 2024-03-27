@@ -2,7 +2,7 @@
   "input_size": [3, 32, 32],
   "fc_dims": 500,
   "num_classes": 10,
-  "conv_dims": [20, 50],
+  "conv_dims": [64, 128],
   "N": 50000,
   "beta_ema": 0.999,
   "device": "cpu",

@@ -38,6 +38,27 @@ def performance_test(model, device, input_shape, repeat=1):
             model, example_inputs, 200, 10)
         print("Base Latency: {:.4f}+-({:.4f}) ms, Base MACs: {}, Peak Memory: {:.4f}M\n"
               .format(base_latency, std_time, flops, memory / (1024*1024)))
+        
+        flops_of_layers(model)
+        parameters_of_layers(model)
+        
+
+def flops_of_layers(model):
+    flops = {
+        name: module.count_expected_flops_and_l0()
+        for name, module in model.named_modules()
+        if hasattr(module, 'count_expected_flops_and_l0')
+    }
+    print(flops)
+
+
+def parameters_of_layers(model):
+    params = {}
+    for name, module in model.named_modules():
+        if hasattr(module, 'qz_loga'):
+            params[name] = measure_parameters(module)
+
+    print(params)
 
 
 def inference(arg):
@@ -49,10 +70,10 @@ def inference(arg):
         from applications.minist import model, dataset, launch, input_shape
         init_model = model.MLP(inference=True, using_reg=using_reg)
         intensive_repeat, batch_size = 111000, 256
-    if arg.application == "cifar10":
+    elif arg.application == "cifar10":
         from applications.cifar10 import model, dataset, launch, input_shape
         init_model = model.L0LeNet5(inference=True, using_reg=using_reg)
-        intensive_repeat, batch_size = 8000, 256
+        intensive_repeat, batch_size = 1400, 256
     elif arg.application == "puremd":
         from applications.puremd import model, dataset, launch, input_shape
         init_model = model.MLP(inference=True, using_reg=using_reg)
@@ -123,13 +144,12 @@ def inference(arg):
             val_loader, init_model, launch.loss_fn, inference=True)
         print('Quality of the model: ', quality, '\n')
     else:
-        performance_test(init_model, args.device,
-                         input_shape, repeat=intensive_repeat)
+        performance_test(init_model, args.device, input_shape, repeat=intensive_repeat)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='inference')
-    parser.add_argument("--application", type=str, default="cifar10",
+    parser.add_argument("--application", type=str, default="cosmoflow",
                         help="CFD or fluidanimation or puremd or cosmoflow or EMDenoise or minist "
                         "or DMS or optical or stemdl, slstr or synthetic or cifar10")
     parser.add_argument("--state_dir", type=str, default="../checkpoints/")

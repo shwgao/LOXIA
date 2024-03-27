@@ -35,6 +35,7 @@ class L0LeNet5(nn.Module):
         self.N = settings["N"]
         self.budget = budget
         self.device = device
+        self.temperature = temperature
         
         if inference:
             use_reg = using_reg
@@ -47,10 +48,10 @@ class L0LeNet5(nn.Module):
                           weight_decay=weight_decay, lamba=lambas, local_rep=local_rep, device=device, use_reg=use_reg),
                  nn.ReLU(), nn.MaxPool2d(2)]
         self.convs = nn.Sequential(*convs)
-
+        flat_fts = 25 * conv_dims[1]
         fcs = [
-               L0Dense(1250, 500, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
-                       lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=use_reg, budget=budget), nn.ReLU(),
+               L0Dense(flat_fts, 500, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
+                       lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=False, budget=budget), nn.ReLU(),
                L0Dense(500, 128, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
                        lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=use_reg, budget=budget), nn.ReLU(),
                L0Dense(128, num_classes, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
@@ -60,7 +61,7 @@ class L0LeNet5(nn.Module):
 
         self.layers = []
         for m in self.modules():
-            if isinstance(m, L0Dense) or isinstance(m, L0Conv2d):
+            if isinstance(m, (L0Dense, L0Conv2d)):
                 self.layers.append(m)
 
         if beta_ema > 0.:
@@ -82,12 +83,18 @@ class L0LeNet5(nn.Module):
 
     def constrain_parameters(self):
         for layer in self.layers:
-            layer.constrain_parameters()
+            if layer.use_reg:
+                layer.constrain_parameters()
 
     def update_budget(self, budget):
         self.budget = budget
         for layer in self.layers:
             layer.update_budget(budget)
+
+    def updata_temperature(self, temperature):
+        self.temperature = temperature
+        for layer in self.layers:
+            layer.update_temperature(temperature)
 
     def regularization(self):
         regularization = 0.
@@ -129,7 +136,7 @@ class L0LeNet5(nn.Module):
             'fcs.2': {'in_mask': self.fcs[2].mask, 'out_mask': self.fcs[4].mask},
             'fcs.4': {'in_mask': self.fcs[4].mask, 'out_mask': None},
         }
-        self.fcs[0].set_couple_prune((1, 50, 5, 5), pre_mask=dependency_dict['convs.3']['out_mask'])
+        self.fcs[0].set_couple_prune1((1, 128, 5, 5), pre_mask=dependency_dict['convs.3']['out_mask'])
         dependency_dict['fcs.0']['in_mask'] = self.fcs[0].mask
 
         return dependency_dict
@@ -142,18 +149,14 @@ class L0LeNet5(nn.Module):
         for name, module in self.named_modules():
             if isinstance(module, L0Conv2d):
                 if dependency_dict[name]['in_mask'] is not None:
-                    module = tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
+                    tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
                 if dependency_dict[name]['out_mask'] is not None:
-                    module = tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
+                    tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
             elif isinstance(module, L0Dense):
                 if dependency_dict[name]['in_mask'] is not None:
-                    module = tp.prune_linear_in_channels(module, idxs=dependency_dict[name]['in_mask'])
+                    tp.prune_linear_in_channels(module, idxs=dependency_dict[name]['in_mask'])
                 if dependency_dict[name]['out_mask'] is not None:
-                    module = tp.prune_linear_out_channels(module, idxs=dependency_dict[name]['out_mask'])
+                    tp.prune_linear_out_channels(module, idxs=dependency_dict[name]['out_mask'])
             elif isinstance(module, nn.BatchNorm2d):
                 if dependency_dict[name]['in_mask'] is not None:
-                    module = tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-
-
-if __name__ == '__main__':
-    print(MLP())
+                    tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])

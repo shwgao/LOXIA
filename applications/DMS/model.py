@@ -153,7 +153,7 @@ class DMSNet(nn.Module):
             'couple': {'in_mask': self.conv5.mask, 'out_mask': self.fc1.mask},
         }
         # process the coupling between conv5 and fc1
-        self.fc1.set_couple_prune(
+        self.fc1.set_couple_prune1(
             (1, 128, 3, 12), pre_mask=dependency_dict['conv5']['out_mask'])
         dependency_dict['fc1']['in_mask'] = self.fc1.mask
 

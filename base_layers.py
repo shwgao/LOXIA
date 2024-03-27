@@ -202,10 +202,11 @@ class L0Dense(Module):
         return s.format(name=self.__class__.__name__, **self.__dict__)
 
     def prepare_for_inference(self):
-        pi = (torch.sigmoid(self.qz_loga).view(1, self.in_features))
-        self.m = F.hardtanh(pi * (limit_b - limit_a) + limit_a, min_val=0, max_val=1).view(-1, 1)
-        self.mask = (self.m.flatten() == 0).nonzero().flatten().tolist()
-        self.weights.data = self.m * self.weights.data
+        if self.use_reg:
+            pi = (torch.sigmoid(self.qz_loga).view(1, self.in_features))
+            self.m = F.hardtanh(pi * (limit_b - limit_a) + limit_a, min_val=0, max_val=1).view(-1, 1)
+            self.mask = (self.m.flatten() == 0).nonzero().flatten().tolist()
+            self.weights.data = self.m * self.weights.data
         self.weight = self.weights
 
         self.weights = None
@@ -426,7 +427,7 @@ class L0Conv2d(Module):
 
         # return expected_flops.data[0], expected_l0.data[0]
         return expected_flops, expected_l0
-
+    
     def get_eps(self, size):
         """Uniform random numbers for the concrete distribution"""
         eps = torch.empty(size, device=self.device).uniform_(self.budget, 1 - self.budget)
