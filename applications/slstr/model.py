@@ -23,7 +23,7 @@ class UNet(nn.Module):
         local_rep = settings["local_rep"]
         temperature = settings["temperature"]
         droprate_init = settings["droprate_init"]
-        budget = settings["budget"]
+        budget = settings["initial_budget"]
         beta_ema = settings["beta_ema"]
 
         self.N = settings["N"]
@@ -116,52 +116,6 @@ class UNet(nn.Module):
         x7 = self.final_conv(x7)
         return torch.sigmoid(x7)
 
-    def constrain_parameters(self):
-        for layer in self.layers:
-            layer.constrain_parameters()
-
-    def update_budget(self, budget):
-        self.budget = budget
-        for layer in self.layers:
-            layer.update_budget(budget)
-
-    def update_temperature(self, temperature):
-        self.temperature = temperature
-        for layer in self.layers:
-            layer.update_temperature(temperature)
-
-    def regularization(self):
-        regularization = 0.
-        for layer in self.layers:
-            regularization += - (1. / self.N) * layer.regularization()
-        if torch.cuda.is_available():
-            regularization = regularization.cuda()
-        return regularization
-
-    def get_exp_flops_l0(self):
-        expected_flops, expected_l0 = 0., 0.
-        for layer in self.layers:
-            e_fl, e_l0 = layer.count_expected_flops_and_l0()
-            expected_flops += e_fl
-            expected_l0 += e_l0
-        return expected_flops, expected_l0
-
-    def update_ema(self):
-        self.steps_ema += 1
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            avg_p.mul_(self.beta_ema).add_((1 - self.beta_ema) * p.data)
-
-    def load_ema_params(self):
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            p.data.copy_(avg_p / (1 - self.beta_ema**self.steps_ema))
-
-    def load_params(self, params):
-        for p, avg_p in zip(self.parameters(), params):
-            p.data.copy_(avg_p)
-
-    def get_params(self):
-        return deepcopy([p.data for p in self.parameters()])
-
     def build_dependency_graph(self):
         dependency_dict = {}
         dependency_dict_skip = {}
@@ -185,23 +139,3 @@ class UNet(nn.Module):
         dependency_dict['dec_conv5']['in_mask'] = dependency_dict['dec_conv5']['in_mask']+[x + offset for x in dependency_dict['enc_conv2']['out_mask']]
 
         return dependency_dict, dependency_dict_skip
-
-    def prune_model(self):
-        for layer in self.layers:
-            if isinstance(layer, L0Conv2d):
-                layer.prepare_for_inference()
-        dependency_dict, dependency_dict_skip = self.build_dependency_graph()
-
-        for name, module in self.named_modules():
-            if isinstance(module, L0Conv2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-                if dependency_dict[name]['out_mask'] is not None:
-                    tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
-            elif isinstance(module, MAPConv2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-            elif isinstance(module, nn.BatchNorm2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-

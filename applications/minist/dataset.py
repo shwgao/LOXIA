@@ -3,7 +3,7 @@ import torchvision.datasets as datasets
 import torchvision.transforms as transforms
 
 
-def get_loader(batch_size=100, pm=False, val_only=False):
+def get_loader(batch_size=100, pm=True, val_only=False):
     transf = [transforms.ToTensor()]
 
     def flatten(x):

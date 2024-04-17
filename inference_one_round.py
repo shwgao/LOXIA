@@ -103,7 +103,7 @@ def inference(arg):
         intensive_repeat, batch_size = 30, 256
     elif arg.application == "stemdl":
         from applications.stemdl import model, dataset, launch, input_shape
-        init_model = model.WideResNet(inference=True, using_reg=using_reg)
+        init_model = model.VGG11(inference=True, using_reg=using_reg)
         intensive_repeat, batch_size = 120, 256
     elif arg.application == "slstr":
         from applications.slstr import model, dataset, launch, input_shape
@@ -143,10 +143,10 @@ def inference(arg):
             val_loader, init_model, launch.loss_fn, inference=True)
         print('Quality of the model: ', quality, '\n')
     else:
-        performance_test(init_model, args.device, input_shape, repeat=intensive_repeat)
+        performance_test(init_model, args.device, input_shape, repeat=intensive_repeat//2)
     
     # record the performance in 'performance.txt'
-    with open('./logs/performance.txt', 'a') as f:
+    with open('./logs/performance1112.txt', 'a') as f:
         f.write(''.join([str(performance_dict[col]).ljust(max_len) for col in columns]) + '\n')
 
 
@@ -161,7 +161,7 @@ if __name__ == '__main__':
     parser.add_argument("--task", type=str,
                         default="performance", help="performance or quality")
     parser.add_argument("--device", type=str,
-                        default='cuda:2', help="0, 1, ...")
+                        default='cpu', help="0, 1, ...")
     params = parser.parse_args()
 
     args = parser.parse_args()
@@ -173,7 +173,7 @@ if __name__ == '__main__':
     columns = ["Application", "Model", "ConvParams", "LinearParams", "ConvFlops", "LinearFlops", "Calflops-Flops", "Calflops-Macs", 
                "Calflops-Params", "PeakMemory", "Latency", "StdTime"]
     max_len = max(len(col) for col in columns)
-    with open('./logs/performance.txt', 'w') as f:
+    with open('./logs/performance1112.txt', 'w') as f:
         f.write(''.join([col.ljust(max_len) for col in columns]) + '\n')
     
     performance_dict = {}

@@ -4,8 +4,7 @@ import torch.nn as nn
 import torch.nn.functional as nnf
 from copy import deepcopy
 from torch.nn import init
-from base_layers import L0Dense, L0Conv3d
-import torch_pruning as tp
+from base_layers import L0Dense, L0Conv3d, BaseModel, L0Conv2d
 import os
 
 
@@ -45,7 +44,7 @@ class Conv3DActMP(nn.Module):
             return self.mp(self.act(self.conv(x)))
 
 
-class CosmoFlow(nn.Module):
+class CosmoFlow(BaseModel):
     def __init__(self, inference=False, using_reg=False):
         super().__init__()
         script_dir = os.path.dirname(__file__)
@@ -63,10 +62,11 @@ class CosmoFlow(nn.Module):
         use_reg = settings["use_reg"]
         local_rep = settings["local_rep"]
         temperature = settings["temperature"]
-        budget = settings["budget"]
+        budget = settings["initial_budget"]
         self.beta_ema = settings["beta_ema"]
         self.N = settings["N"]
 
+        self.flat_shape = settings["flat_shape"]
         self.budget = budget
         self.device = device
         self.temperature = temperature
@@ -123,11 +123,6 @@ class CosmoFlow(nn.Module):
             if hasattr(layer, 'weights'):
                 init.xavier_uniform_(layer.weights)
 
-    def constrain_parameters(self):
-        for layer in self.layers:
-            if hasattr(layer, 'weights'):
-                layer.constrain_parameters()
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         for i, conv_layer in enumerate(self.conv_seq):
             x = conv_layer(x)
@@ -144,90 +139,3 @@ class CosmoFlow(nn.Module):
 
         x = nnf.sigmoid(self.output(x)) * 1.2
         return x
-
-    def update_budget(self, budget):
-        for layer in self.layers:
-            layer.update_budget(budget)
-
-    def update_temperature(self, temperature):
-        for layer in self.layers:
-            layer.update_temperature(temperature)
-
-    def regularization(self):
-        regularization = 0.
-        for layer in self.layers:
-            if hasattr(layer, 'weights'):
-                regularization += - (1. / self.N) * layer.regularization()
-        return regularization
-
-    def get_exp_flops_l0(self):
-        expected_flops, expected_l0 = 0., 0.
-        for layer in self.layers:
-            if hasattr(layer, 'weights'):
-                e_fl, e_l0 = layer.count_expected_flops_and_l0()
-                expected_flops += e_fl
-                expected_l0 += e_l0
-        return expected_flops, expected_l0
-
-    def update_ema(self):
-        self.steps_ema += 1
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            avg_p.mul_(self.beta_ema).add_((1 - self.beta_ema) * p.data)
-
-    def load_ema_params(self):
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            p.data.copy_(avg_p / (1 - self.beta_ema ** self.steps_ema))
-
-    def load_params(self, params):
-        for p, avg_p in zip(self.parameters(), params):
-            p.data.copy_(avg_p)
-
-    def get_params(self):
-        params = deepcopy(list(p.data for p in self.parameters()))
-        return params
-
-    def build_dependency_graph(self):
-        dependency_dict = {'conv_seq.0.conv': {'in_mask': None, 'out_mask': self.conv_seq[0].conv.mask},
-                           'conv_seq.0.bn': {'in_mask': self.conv_seq[0].conv.mask, 'out_mask': None},
-                           'conv_seq.1.conv': {'in_mask': self.conv_seq[0].conv.mask,
-                                               'out_mask': self.conv_seq[1].conv.mask},
-                           'conv_seq.1.bn': {'in_mask': self.conv_seq[1].conv.mask, 'out_mask': None},
-                           'conv_seq.2.conv': {'in_mask': self.conv_seq[1].conv.mask,
-                                               'out_mask': self.conv_seq[2].conv.mask},
-                           'conv_seq.2.bn': {'in_mask': self.conv_seq[2].conv.mask, 'out_mask': None},
-                           'conv_seq.3.conv': {'in_mask': self.conv_seq[2].conv.mask,
-                                               'out_mask': self.conv_seq[3].conv.mask},
-                           'conv_seq.3.bn': {'in_mask': self.conv_seq[3].conv.mask, 'out_mask': None},
-                           'conv_seq.4.conv': {'in_mask': self.conv_seq[3].conv.mask,
-                                               'out_mask': self.conv_seq[4].conv.mask},
-                           'conv_seq.4.bn': {'in_mask': self.conv_seq[4].conv.mask, 'out_mask': None},
-                           'dense1': {'in_mask': self.dense1.mask, 'out_mask': self.dense2.mask},
-                           'dense2': {'in_mask': self.dense2.mask, 'out_mask': self.output.mask},
-                           'output': {'in_mask': self.output.mask, 'out_mask': None}}
-        # dependency_dict['dense1'] = {'in_mask': self.dense1.mask, 'out_mask': self.dense2.mask}
-
-        # process the coupling between conv5 and fc1
-        self.dense1.set_couple_prune1((1, 128, 4, 4, 4), pre_mask=dependency_dict['conv_seq.4.conv']['out_mask'])
-        dependency_dict['dense1']['in_mask'] = self.dense1.mask
-
-        return dependency_dict
-
-    def prune_model(self):
-        for layer in self.layers:
-            if isinstance(layer, L0Conv3d) or isinstance(layer, L0Dense):
-                layer.prepare_for_inference()
-        dependency_dict = self.build_dependency_graph()
-        for name, module in self.named_modules():
-            if isinstance(module, L0Conv3d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-                if dependency_dict[name]['out_mask'] is not None:
-                    tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
-            elif isinstance(module, L0Dense):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_linear_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-                if dependency_dict[name]['out_mask'] is not None:
-                    tp.prune_linear_out_channels(module, idxs=dependency_dict[name]['out_mask'])
-            elif isinstance(module, nn.BatchNorm2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])

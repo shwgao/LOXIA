@@ -36,38 +36,6 @@ class Load_Dataset_Cosmoflow(Dataset):
     def __len__(self):
         return len(self.tensor_x)
 
-    def analyse_data(self):
-        print(
-            f"mean: {np.mean([torch.mean(x) for x in self.tensor_x])}, std: {np.std([torch.std(x) for x in self.tensor_x])}"
-        )
-        print(
-            f"max: {np.max([torch.max(x) for x in self.tensor_x])}, min: {np.min([torch.min(x) for x in self.tensor_x])}"
-        )
-        print(
-            f"mean: {np.mean([torch.mean(x) for x in self.tensor_y])}, std: {np.std([torch.std(x) for x in self.tensor_y])}"
-        )
-        print(
-            f"max: {np.max([torch.max(x) for x in self.tensor_y])}, min: {np.min([torch.min(x) for x in self.tensor_y])}"
-        )
-
-        np_x = np.stack([x.numpy() for x in self.tensor_x])
-
-        # Count the elements of a high-dimensional array np_x and draw a histogram
-        fig = plt.figure()
-        ax = fig.add_subplot(111)
-        ax.hist(
-            np_x.flatten(),
-            bins=100,
-            color="skyblue",
-            edgecolor="black",
-            range=(0.02, 1),
-        )
-        # 设置标题和标签
-        plt.title("Histogram")
-        plt.xlabel("Value")
-        plt.ylabel("Frequency")
-        plt.show()
-
 
 def get_loader(batch_size=100, val_only=False):
     train_set = Load_Dataset_Cosmoflow("/aul/homes/sgao014/datasets/cosmoflow/train")

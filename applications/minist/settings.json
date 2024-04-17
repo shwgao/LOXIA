@@ -1,10 +1,14 @@
 {
+  "application": "Mnist",
+  "loss": "CrossEntropyLoss",
+  "quality": "Accuracy",
+  "higher_better": true,
   "input_dim": 784,
   "num_classes": 10,
   "layer_dims": [784, 300, 100],
   "N": 50000,
   "beta_ema": 0.999,
-  "device": "cpu",
+  "device": "cuda",
   "weight_decay": 1,
   "lambas": 1.0,
   "local_rep": false,
@@ -14,5 +18,11 @@
   "initial_budget": 1e-6,
   "final_budget": 0.5,
   "initial_temp": 0.01,
-  "final_temp": 1
+  "final_temp": 1,
+  "strategy": "anneal",
+  "epochs": 100,
+  "stop_epochs": 100,
+  "batch_size": 200,
+  "lr": 0.001,
+  "scheduler": null
 }

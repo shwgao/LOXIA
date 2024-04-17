@@ -1,51 +1,48 @@
+import os
 import numpy as np
 import torch
+import h5py
 import torch.utils.data.dataset as dataset
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import OneHotEncoder
 from torch.utils.data import DataLoader
 
-from utils import delete_constant_columns, reshape_vector, Load_Dataset_Surrogate
 
+class DMSDataset(dataset.Dataset):
+    """
+    A generic zipped dataset loader for DMS Structure
+    """
+    def __init__(self, training=True):
 
-def read_data(input_file, output_file):
-    LengthOfDataset = 2329104
-    NUM_ATOMS = 35
-    NUM_DIMENSIONS = 1
-    with open(input_file, "r") as f:
-        xyz = [
-            float(f.readline())
-            for _ in range(NUM_ATOMS * NUM_DIMENSIONS * LengthOfDataset)
-        ]
+        base_dataset_dir = '/aul/homes/sgao014/sciml_bench/datasets/dms_sim'
 
-    # Create X and Y lists using list comprehension
-    X = reshape_vector(xyz, NUM_ATOMS, NUM_DIMENSIONS, LengthOfDataset)
+        dataset_path = os.path.join(base_dataset_dir, 'training/data-binary.h5')
+        hf = h5py.File(dataset_path, 'r')
+        onehot_encoder = OneHotEncoder(sparse=False)
+        if training:
+            img = hf['train/images'][:]
+            img = np.swapaxes(img, 1, 3)
+            self.X = torch.from_numpy(np.atleast_3d(img))
+            lab = np.array(hf['train/labels']).reshape(-1, 1)
+            lab = onehot_encoder.fit_transform(lab).astype(int)
+            self.Y = torch.from_numpy(lab).float()
+        else:
+            img = hf['test/images'][:]
+            img = np.swapaxes(img, 1, 3)
+            self.X = torch.from_numpy(np.atleast_3d(img))
+            lab = np.array(hf['test/labels']).reshape(-1, 1)
+            lab = onehot_encoder.fit_transform(lab).astype(int)
+            self.Y = torch.from_numpy(lab).float()
 
-    with open(output_file, "r") as f:
-        out = [float(f.readline()) for _ in range(LengthOfDataset * 5)]
+    def __len__(self):
+        return self.X.shape[0]
 
-    NUM_ATOMS = 5
-    NUM_DIMENSIONS = 1
-
-    X = delete_constant_columns(np.array(X))
-    scaler = StandardScaler()
-    X_normalized = scaler.fit_transform(X)
-
-    Y = reshape_vector(out, NUM_ATOMS, NUM_DIMENSIONS, LengthOfDataset)
-
-    prime_X = np.array(X_normalized)
-    prime_Y = np.array(Y)
-    return prime_X, prime_Y
+    def __getitem__(self, index):
+        return self.X[index], self.Y[index]
 
 
 def get_loader(batch_size=1024, val_only=False):
-    input_file = "./Dataset/CFD/input.txt"
-    output_file = "./Dataset/CFD/output.txt"
-
-    data_set = Load_Dataset_Surrogate(input_file, output_file, read_data, application='CFD', normalize=False)
-
-    train_set_len = int(0.8 * len(data_set))
-    train_set, test_set = dataset.random_split(data_set, [train_set_len, len(data_set) - train_set_len],
-                                               generator=torch.Generator().manual_seed(42))
+    train_set = DMSDataset(training=True)
+    test_set = DMSDataset(training=False)
 
     val_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4,

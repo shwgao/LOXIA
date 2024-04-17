@@ -1,3 +1,5 @@
+from copy import deepcopy
+import torch_pruning as tp
 import torch
 import math
 import torch.nn as nn
@@ -10,6 +12,104 @@ from torch.autograd import Variable
 from torch.nn import init
 
 limit_a, limit_b, epsilon = -0.1, 1.1, 1e-6
+
+
+class BaseModel(nn.Module):
+    def update_budget(self, budget):
+        for layer in self.layers:
+            layer.update_budget(budget)
+
+    def update_temperature(self, temperature):
+        for layer in self.layers:
+            layer.update_temperature(temperature)
+
+    def constrain_parameters(self):
+        for layer in self.layers:
+            if layer.use_reg:
+                layer.constrain_parameters()
+
+    def regularization(self):
+        regularization = 0.
+        for layer in self.layers:
+            if layer.use_reg:
+                regularization += - (1. / self.N) * layer.regularization()
+        return regularization
+
+    def get_exp_flops_l0(self):
+        expected_flops, expected_l0 = 0., 0.
+        for layer in self.layers:
+            e_fl, e_l0 = layer.count_expected_flops_and_l0()
+            expected_flops += e_fl
+            expected_l0 += e_l0
+        return expected_flops, expected_l0
+
+    def update_ema(self):
+        self.steps_ema += 1
+        for p, avg_p in zip(self.parameters(), self.avg_param):
+            avg_p.mul_(self.beta_ema).add_((1 - self.beta_ema) * p.data)
+
+    def load_ema_params(self):
+        for p, avg_p in zip(self.parameters(), self.avg_param):
+            p.data.copy_(avg_p / (1 - self.beta_ema ** self.steps_ema))
+
+    def load_params(self, params):
+        for p, avg_p in zip(self.parameters(), params):
+            p.data.copy_(avg_p)
+
+    def get_params(self):
+        params = deepcopy(list(p.data for p in self.parameters()))
+        return params
+
+    def build_dependency_graph(self):
+        dependency_dict = {}
+        pre_module = None
+
+        for name, module in self.named_modules():
+            if isinstance(module, L0Dense):
+                dependency_dict[name] = {'in_mask': module.mask, 'out_mask': None, 'type': 'fc'}
+                if pre_module is not None:
+                    if dependency_dict[pre_module]['type'] == 'fc':
+                        dependency_dict[pre_module]['out_mask'] = module.mask
+                    else:  # set couple prune between conv and fc
+                        module.set_couple_prune1(self.flat_shape, pre_mask=dependency_dict[pre_module]['out_mask'])
+                        dependency_dict[name]['in_mask'] = module.mask
+                pre_module = name
+            elif isinstance(module, (L0Conv2d, L0Conv3d)):
+                dependency_dict[name] = {'in_mask': None, 'out_mask': module.mask, 'type': 'conv'}
+                if pre_module is not None and dependency_dict[pre_module]['type'] == 'conv':
+                    dependency_dict[name]['in_mask'] = dependency_dict[pre_module]['out_mask']
+                pre_module = name
+            elif isinstance(module, nn.BatchNorm2d):
+                dependency_dict[name] = {'in_mask': dependency_dict[pre_module]['out_mask'], 'out_mask': None, 'type': 'bn'}
+            else:
+                continue
+
+        return dependency_dict
+
+    def prune_model(self):
+        for layer in self.layers:
+            if isinstance(layer, L0Dense):
+                if layer.use_reg:
+                    layer.prepare_for_inference()
+        dependency_dict = self.build_dependency_graph()
+
+        for name, module in self.named_modules():
+            if name in dependency_dict:
+                if isinstance(module, (L0Dense, nn.Linear)):
+                    if dependency_dict[name]['in_mask'] is not None:
+                        tp.prune_linear_in_channels(module, idxs=dependency_dict[name]['in_mask'])
+                    if dependency_dict[name]['out_mask'] is not None:
+                        tp.prune_linear_out_channels(module, idxs=dependency_dict[name]['out_mask'])
+                elif isinstance(module, (L0Conv2d, nn.Conv2d, L0Conv3d)):
+                    if dependency_dict[name]['in_mask'] is not None:
+                        tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
+                    if dependency_dict[name]['out_mask'] is not None:
+                        tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
+                elif isinstance(module, nn.BatchNorm2d):
+                    if dependency_dict[name]['in_mask'] is not None:
+                        tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])
+                else:
+                    print(f"Module {name} is not supported for pruning.")
 
 
 class L0Dense(Module):
@@ -79,7 +179,8 @@ class L0Dense(Module):
             self.bias.data.fill_(0)
 
     def constrain_parameters(self):
-        self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
+        if self.use_reg:
+            self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
 
     def cdf_qz(self, x):
         """Implements the CDF of the 'stretched' concrete distribution"""
@@ -114,7 +215,7 @@ class L0Dense(Module):
         self.temperature = temperature
 
     def regularization(self):
-        return self._reg_w() if self.use_reg else 0
+        return self._reg_w() if self.use_reg else 0.
 
     def count_expected_flops_and_l0(self):
         """Measures the expected floating point operations (FLOPs) and the expected L0 norm"""
@@ -342,7 +443,7 @@ class L0Conv2d(Module):
         print(self)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weights, mode="fan_in")
+        init.kaiming_normal_(self.weights, mode="fan_in")
 
         if self.use_reg:
             self.qz_loga.data.normal_(math.log(1 - self.droprate_init) - math.log(self.droprate_init), 1e-2)
@@ -351,7 +452,8 @@ class L0Conv2d(Module):
             self.bias.data.fill_(0)
 
     def constrain_parameters(self):
-        self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
+        if self.use_reg:
+            self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
 
     def cdf_qz(self, x):
         """Implements the CDF of the 'stretched' concrete distribution"""
@@ -653,7 +755,7 @@ class L0Conv3d(Module):
         return F.hardtanh(pi * (limit_b - limit_a) + limit_a, min_val=0, max_val=1)
 
     def reset_parameters(self):
-        init.kaiming_normal(self.weights, mode="fan_in")
+        init.kaiming_normal_(self.weights, mode="fan_in")
 
         if self.use_reg:
             self.qz_loga.data.normal_(math.log(1 - self.droprate_init) - math.log(self.droprate_init), 1e-2)
@@ -662,7 +764,8 @@ class L0Conv3d(Module):
             self.bias.data.fill_(0)
 
     def constrain_parameters(self):
-        self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
+        if self.use_reg:
+            self.qz_loga.data.clamp_(min=math.log(1e-2), max=math.log(1e2))
 
     def cdf_qz(self, x):
         """Implements the CDF of the 'stretched' concrete distribution"""
@@ -838,7 +941,6 @@ class L0Conv3d(Module):
             return output
 
         self.forward = new_forward
-
 
 
 class MAPDense(Module):

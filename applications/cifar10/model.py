@@ -2,14 +2,12 @@ import json
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from base_layers import L0Dense, L0Conv2d
-from utils import get_flat_fts
-import torch_pruning as tp
+from base_layers import L0Dense, L0Conv2d, BaseModel
 import torch.autograd.profiler as profiler
 import os
 
 
-class L0LeNet5(nn.Module):
+class L0LeNet5(BaseModel):
     def __init__(self, inference=False, using_reg=False):
         super(L0LeNet5, self).__init__()
         
@@ -31,6 +29,7 @@ class L0LeNet5(nn.Module):
         budget = settings["budget"]
         beta_ema = settings["beta_ema"]
 
+        self.flat_shape = settings["flat_shape"]
         self.beta_ema = beta_ema
         self.N = settings["N"]
         self.budget = budget
@@ -43,16 +42,16 @@ class L0LeNet5(nn.Module):
         convs = [L0Conv2d(3, conv_dims[0], 5, droprate_init=droprate_init, temperature=temperature, budget=budget,
                           weight_decay=weight_decay, lamba=lambas, local_rep=local_rep, device=device, use_reg=use_reg),
                  nn.ReLU(), nn.MaxPool2d(2),
-                #  nn.Conv2d(conv_dims[0], conv_dims[1], 5),
+
                  L0Conv2d(conv_dims[0], conv_dims[1], 5, droprate_init=droprate_init, temperature=temperature, budget=budget,
                           weight_decay=weight_decay, lamba=lambas, local_rep=local_rep, device=device, use_reg=use_reg),
                  nn.ReLU(), nn.MaxPool2d(2)]
         self.convs = nn.Sequential(*convs)
         flat_fts = 25 * conv_dims[1]
         fcs = [
-               L0Dense(flat_fts, 500, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
-                       lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=False, budget=budget), nn.ReLU(),
-               L0Dense(500, 128, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
+               L0Dense(flat_fts, fc_dims, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
+                       lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=use_reg, budget=budget), nn.ReLU(),
+               L0Dense(fc_dims, 128, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
                        lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=use_reg, budget=budget), nn.ReLU(),
                L0Dense(128, num_classes, droprate_init=droprate_init, weight_decay=weight_decay, device=device,
                        lamba=lambas, local_rep=local_rep, temperature=temperature, use_reg=use_reg, budget=budget)
@@ -81,82 +80,28 @@ class L0LeNet5(nn.Module):
             o = self.fcs(o)
         return o
 
-    def constrain_parameters(self):
-        for layer in self.layers:
-            if layer.use_reg:
-                layer.constrain_parameters()
-
-    def update_budget(self, budget):
-        self.budget = budget
-        for layer in self.layers:
-            layer.update_budget(budget)
-
-    def updata_temperature(self, temperature):
-        self.temperature = temperature
-        for layer in self.layers:
-            layer.update_temperature(temperature)
-
-    def regularization(self):
-        regularization = 0.
-        for layer in self.layers:
-            regularization += - (1. / self.N) * layer.regularization()
-        if torch.cuda.is_available():
-            regularization = regularization.cuda()
-        return regularization
-
-    def get_exp_flops_l0(self):
-        expected_flops, expected_l0 = 0., 0.
-        for layer in self.layers:
-            e_fl, e_l0 = layer.count_expected_flops_and_l0()
-            expected_flops += e_fl
-            expected_l0 += e_l0
-        return expected_flops, expected_l0
-
-    def update_ema(self):
-        self.steps_ema += 1
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            avg_p.mul_(self.beta_ema).add_((1 - self.beta_ema) * p.data)
-
-    def load_ema_params(self):
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            p.data.copy_(avg_p / (1 - self.beta_ema**self.steps_ema))
-
-    def load_params(self, params):
-        for p, avg_p in zip(self.parameters(), params):
-            p.data.copy_(avg_p)
-
-    def get_params(self):
-        return deepcopy([p.data for p in self.parameters()])
-    
     def build_dependency_graph(self):
-        dependency_dict = {
-            'convs.0': {'in_mask': None, 'out_mask': self.convs[0].mask},
-            'convs.3': {'in_mask': self.convs[0].mask,'out_mask': self.convs[3].mask},
-            'fcs.0': {'in_mask': self.fcs[0].mask, 'out_mask': self.fcs[2].mask},
-            'fcs.2': {'in_mask': self.fcs[2].mask, 'out_mask': self.fcs[4].mask},
-            'fcs.4': {'in_mask': self.fcs[4].mask, 'out_mask': None},
-        }
-        self.fcs[0].set_couple_prune1((1, 128, 5, 5), pre_mask=dependency_dict['convs.3']['out_mask'])
-        dependency_dict['fcs.0']['in_mask'] = self.fcs[0].mask
+        dependency_dict = {}
+        pre_module = None
+
+        for name, module in self.named_modules():
+            if isinstance(module, L0Dense):
+                dependency_dict[name] = {'in_mask': module.mask, 'out_mask': None, 'type': 'fc'}
+                if pre_module is not None:
+                    if dependency_dict[pre_module]['type'] == 'fc':
+                        dependency_dict[pre_module]['out_mask'] = module.mask
+                    else:  # set couple prune between conv and fc
+                        module.set_couple_prune1(self.flat_shape, pre_mask=dependency_dict[pre_module]['out_mask'])
+                        dependency_dict[name]['in_mask'] = module.mask
+                pre_module = name
+            elif isinstance(module, L0Conv2d):
+                dependency_dict[name] = {'in_mask': None, 'out_mask': module.mask}
+                if pre_module is not None:
+                    dependency_dict[name]['in_mask'] = dependency_dict[pre_module]['out_mask']
+                pre_module = name
+            elif isinstance(module, nn.BatchNorm2d):
+                dependency_dict[name] = {'in_mask': dependency_dict[pre_module]['out_mask'], 'out_mask': None}
+            else:
+                continue
 
         return dependency_dict
-    
-    def prune_model(self):
-        for layer in self.layers:
-            if isinstance(layer, (L0Conv2d, L0Dense)):
-                layer.prepare_for_inference()
-        dependency_dict = self.build_dependency_graph()
-        for name, module in self.named_modules():
-            if isinstance(module, L0Conv2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_conv_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-                if dependency_dict[name]['out_mask'] is not None:
-                    tp.prune_conv_out_channels(module, idxs=dependency_dict[name]['out_mask'])
-            elif isinstance(module, L0Dense):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_linear_in_channels(module, idxs=dependency_dict[name]['in_mask'])
-                if dependency_dict[name]['out_mask'] is not None:
-                    tp.prune_linear_out_channels(module, idxs=dependency_dict[name]['out_mask'])
-            elif isinstance(module, nn.BatchNorm2d):
-                if dependency_dict[name]['in_mask'] is not None:
-                    tp.prune_batchnorm_in_channels(module, idxs=dependency_dict[name]['in_mask'])

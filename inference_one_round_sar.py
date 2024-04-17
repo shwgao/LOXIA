@@ -186,7 +186,7 @@ def inference(arg):
         intensive_repeat, batch_size = 30, 256
     elif arg.application == "stemdl":
         from applications.stemdl import model, dataset, launch, input_shape
-        init_model = model.WideResNet(inference=True, using_reg=using_reg)
+        init_model = model.VGG11(inference=True, using_reg=using_reg)
         intensive_repeat, batch_size = 120, 256
     elif arg.application == "slstr":
         from applications.slstr import model, dataset, launch, input_shape
@@ -285,5 +285,5 @@ if __name__ == '__main__':
             
             performance_dict["Model"] = model
             
-            inference(args)
-            # transfer_model(args)
+            # inference(args)
+            transfer_model(args)

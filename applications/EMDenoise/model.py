@@ -2,12 +2,11 @@ import json
 import torch
 import torch.nn as nn
 from copy import deepcopy
-from base_layers import L0Conv2d
-import torch_pruning as tp
+from base_layers import L0Conv2d, L0Dense, L0Conv3d, BaseModel
 import os
 
 
-class EMDenoiseNet(nn.Module):
+class EMDenoiseNet(BaseModel):
     def __init__(self, inference=False, using_reg=False):
         super(EMDenoiseNet, self).__init__()
 
@@ -22,7 +21,7 @@ class EMDenoiseNet(nn.Module):
         local_rep = settings["local_rep"]
         temperature = settings["temperature"]
         droprate_init = settings["droprate_init"]
-        budget = settings["budget"]
+        budget = settings["initial_budget"]
         beta_ema = settings["beta_ema"]
 
         self.N = settings["N"]
@@ -380,106 +379,39 @@ class EMDenoiseNet(nn.Module):
         x = self.last_layer(x)
         return x
 
-    def constrain_parameters(self):
-        for layer in self.layers:
-            layer.constrain_parameters()
-
-    def update_budget(self, budget):
-        self.budget = budget
-        for layer in self.layers:
-            layer.update_budget(budget)
-
-    def regularization(self):
-        regularization = 0.0
-        for layer in self.layers:
-            regularization += -(1.0 / self.N) * layer.regularization()
-        if torch.cuda.is_available():
-            regularization = regularization.cuda()
-        return regularization
-
-    def get_exp_flops_l0(self):
-        expected_flops, expected_l0 = 0.0, 0.0
-        for layer in self.layers:
-            e_fl, e_l0 = layer.count_expected_flops_and_l0()
-            expected_flops += e_fl
-            expected_l0 += e_l0
-        return expected_flops, expected_l0
-
-    def update_ema(self):
-        self.steps_ema += 1
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            avg_p.mul_(self.beta_ema).add_((1 - self.beta_ema) * p.data)
-
-    def load_ema_params(self):
-        for p, avg_p in zip(self.parameters(), self.avg_param):
-            p.data.copy_(avg_p / (1 - self.beta_ema**self.steps_ema))
-
-    def load_params(self, params):
-        for p, avg_p in zip(self.parameters(), params):
-            p.data.copy_(avg_p)
-
-    def get_params(self):
-        params = deepcopy(list(p.data for p in self.parameters()))
-        return params
-
     def build_dependency_graph(self):
         dependency_dict = {}
-        dependency_dict_skip = {}
         pre_module = None
 
         for name, module in self.named_modules():
-            if isinstance(module, L0Conv2d) and module.use_reg:
-                dependency_dict[name] = {
-                    "in_mask": None, "out_mask": module.mask}
+            if isinstance(module, L0Dense):
+                dependency_dict[name] = {'in_mask': module.mask, 'out_mask': None, 'type': 'fc'}
                 if pre_module is not None:
-                    dependency_dict[name]["in_mask"] = dependency_dict[pre_module][
-                        "out_mask"
-                    ]
+                    if dependency_dict[pre_module]['type'] == 'fc':
+                        dependency_dict[pre_module]['out_mask'] = module.mask
+                    else:  # set couple prune between conv and fc
+                        module.set_couple_prune1(self.flat_shape, pre_mask=dependency_dict[pre_module]['out_mask'])
+                        dependency_dict[name]['in_mask'] = module.mask
+                pre_module = name
+            elif isinstance(module, (L0Conv2d, L0Conv3d)):
+                dependency_dict[name] = {'in_mask': None, 'out_mask': module.mask, 'type': 'conv'}
+                if pre_module is not None and dependency_dict[pre_module]['type'] == 'conv':
+                    dependency_dict[name]['in_mask'] = dependency_dict[pre_module]['out_mask']
                 pre_module = name
             elif isinstance(module, nn.BatchNorm2d):
-                dependency_dict[name] = {
-                    "in_mask": dependency_dict[pre_module]["out_mask"],
-                    "out_mask": None,
-                }
-
-        dependency_dict["last_layer"] = {
-            "in_mask": self.block7[4].mask,
-            "out_mask": None,
-        }
+                dependency_dict[name] = {'in_mask': dependency_dict[pre_module]['out_mask'], 'out_mask': None,
+                                         'type': 'bn'}
+            else:
+                continue
 
         # dependency of skip layers
         offset = self.block3[3].m.shape[1]
-        dependency_dict["block5.1"]["in_mask"] = dependency_dict["block5.1"]["in_mask"] + \
-            [x + offset for x in dependency_dict["block3.3"]["out_mask"]]
+        dependency_dict["block5.1"]["in_mask"] = dependency_dict["block5.1"]["in_mask"] + [x + offset for x in dependency_dict["block3.3"]["out_mask"]]
 
         offset = self.block2[3].m.shape[1]
-        dependency_dict["block6.1"]["in_mask"] = dependency_dict["block6.1"]["in_mask"] + \
-            [x + offset for x in dependency_dict["block2.3"]["out_mask"]]
+        dependency_dict["block6.1"]["in_mask"] = dependency_dict["block6.1"]["in_mask"] + [x + offset for x in dependency_dict["block2.3"]["out_mask"]]
 
         offset = self.block1[3].m.shape[1]
-        dependency_dict["block7.1"]["in_mask"] = dependency_dict["block7.1"]["in_mask"] + \
-            [x + offset for x in dependency_dict["block1.3"]["out_mask"]]
+        dependency_dict["block7.1"]["in_mask"] = dependency_dict["block7.1"]["in_mask"] + [x + offset for x in dependency_dict["block1.3"]["out_mask"]]
 
-        return dependency_dict, dependency_dict_skip
-
-    def prune_model(self):
-        for layer in self.layers:
-            if isinstance(layer, L0Conv2d):
-                layer.prepare_for_inference()
-        dependency_dict, dependency_dict_skip = self.build_dependency_graph()
-
-        for name, module in self.named_modules():
-            if isinstance(module, L0Conv2d) and name in dependency_dict.keys():
-                if dependency_dict[name]["in_mask"] is not None:
-                    tp.prune_conv_in_channels(
-                        module, idxs=dependency_dict[name]["in_mask"]
-                    )
-                if dependency_dict[name]["out_mask"] is not None:
-                    tp.prune_conv_out_channels(
-                        module, idxs=dependency_dict[name]["out_mask"]
-                    )
-            elif isinstance(module, nn.BatchNorm2d):
-                if dependency_dict[name]["in_mask"] is not None:
-                    tp.prune_batchnorm_in_channels(
-                        module, idxs=dependency_dict[name]["in_mask"]
-                    )
+        return dependency_dict

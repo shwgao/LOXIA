@@ -33,7 +33,7 @@ def performance_test(model, device, input_shape, repeat=1):
         example_inputs = example_inputs.repeat_interleave(repeat, 0).to(device)
 
         print('Testing input with shape: ', example_inputs.shape)
-        memory = measure_memory(model, example_inputs, device=device)
+        memory = measure_memory(model, example_inputs, device=device) if device != 'cpu' else 0
         base_latency, std_time = measure_latency(
             model, example_inputs, 200, 10)
         print("Base Latency: {:.4f}+-({:.4f}) ms, Base MACs: {}, Peak Memory: {:.4f}M\n"
@@ -41,7 +41,7 @@ def performance_test(model, device, input_shape, repeat=1):
         
         flops_of_layers(model)
         parameters_of_layers(model)
-        
+
 
 def flops_of_layers(model):
     flops = {
@@ -81,7 +81,7 @@ def inference(arg):
     elif arg.application == "CFD":
         from applications.CFD import model, dataset, launch, input_shape
         init_model = model.MLP(inference=True, using_reg=using_reg)
-        intensive_repeat, batch_size = 180000, 1024
+        intensive_repeat, batch_size = 167000, 1024
     elif arg.application == "fluidanimation":
         from applications.fluidanimation import model, dataset, launch, input_shape
         init_model = model.MLP(inference=True, using_reg=using_reg)
@@ -89,7 +89,7 @@ def inference(arg):
     elif arg.application == "cosmoflow":
         from applications.cosmoflow import model, dataset, launch, input_shape
         init_model = model.CosmoFlow(inference=True, using_reg=using_reg)
-        intensive_repeat, batch_size = 6, 64
+        intensive_repeat, batch_size = 5, 64
     elif arg.application == "EMDenoise":
         from applications.EMDenoise import model, dataset, launch, input_shape
         init_model = model.EMDenoiseNet(inference=True, using_reg=using_reg)
@@ -104,8 +104,8 @@ def inference(arg):
         intensive_repeat, batch_size = 30, 256
     elif arg.application == "stemdl":
         from applications.stemdl import model, dataset, launch, input_shape
-        init_model = model.WideResNet(inference=True, using_reg=using_reg)
-        intensive_repeat, batch_size = 120, 256
+        init_model = model.VGG11(inference=True, using_reg=using_reg)
+        intensive_repeat, batch_size = 95, 256
     elif arg.application == "slstr":
         from applications.slstr import model, dataset, launch, input_shape
         init_model = model.UNet(inference=True, using_reg=using_reg)
@@ -113,7 +113,7 @@ def inference(arg):
     elif arg.application == "synthetic":
         from applications.synthetic import model, dataset, launch, input_shape
         init_model = model.MLP(inference=True, using_reg=using_reg)
-        intensive_repeat, batch_size = 340000, 100
+        intensive_repeat, batch_size = 310000, 100
     else:
         print("Application not found")
         return
@@ -145,24 +145,25 @@ def inference(arg):
         print('Quality of the model: ', quality, '\n')
     else:
         performance_test(init_model, args.device, input_shape, repeat=intensive_repeat)
+        # performance_test(init_model, args.device, input_shape, repeat=1)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='inference')
-    parser.add_argument("--application", type=str, default="cosmoflow",
+    parser.add_argument("--application", type=str, default="cifar10",
                         help="CFD or fluidanimation or puremd or cosmoflow or EMDenoise or minist "
                         "or DMS or optical or stemdl, slstr or synthetic or cifar10")
-    parser.add_argument("--state_dir", type=str, default="../checkpoints/")
+    parser.add_argument("--state_dir", type=str, default="../checkpoints-v0/")
     parser.add_argument("--model", type=str,
                         default="original", help="original or pruned")
     parser.add_argument("--task", type=str,
                         default="performance", help="performance or quality")
     parser.add_argument("--device", type=str,
-                        default='cuda:0', help="0, 1, ...")
+                        default='cpu', help="0, 1, ...")
     params = parser.parse_args()
 
     args = parser.parse_args()
     # args.application = 'fluidanimation'
     # args.task = 'quality'
-    # args.model = 'pruned'
+    args.model = 'pruned'
     inference(args)

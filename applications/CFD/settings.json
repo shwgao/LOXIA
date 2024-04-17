@@ -1,5 +1,5 @@
 {
-  "application": "puremd",
+  "application": "CFD",
   "loss": "mse",
   "quality": "R2",
   "higher_better": true,
@@ -8,15 +8,20 @@
   "layer_dims": [784, 300, 100],
   "N": 50000,
   "beta_ema": 0,
-  "device": "cpu",
+  "device": "cuda",
   "weight_decay": 0,
   "lambas": 1.0,
   "local_rep": false,
   "temperature": 0.67,
   "use_reg": true,
-  "budget": 1e-6,
   "initial_budget": 1e-6,
   "final_budget": 0.5,
   "initial_temp": 0.01,
-  "final_temp": 1
+  "final_temp": 1,
+  "strategy": "anneal",
+  "epochs": 100,
+  "stop_epochs": 100,
+  "batch_size": 3000,
+  "lr": 0.0005,
+  "scheduler": null
 }

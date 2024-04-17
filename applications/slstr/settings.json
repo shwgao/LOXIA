@@ -6,7 +6,7 @@
   "droprate_init": 0.5,
   "N": 1950017,
   "beta_ema": 0,
-  "device": "cpu",
+  "device": "cuda",
   "weight_decay": 0,
   "lambas": 1.0,
   "local_rep": false,
@@ -16,5 +16,11 @@
   "initial_budget": 1e-6,
   "final_budget": 0.5,
   "initial_temp": 0.01,
-  "final_temp": 1
+  "final_temp": 1,
+  "strategy": "anneal",
+  "epochs": 100,
+  "stop_epochs": 100,
+  "batch_size": 16,
+  "lr": 0.001,
+  "scheduler": null
 }

@@ -1,3 +1,5 @@
+import math
+
 import torch
 import numpy as np
 import os
@@ -384,3 +386,25 @@ def compute_conv_flops(input_shape, kernel_size, stride, padding, in_channels, o
 
 def compute_linear_flops(in_features, out_features):
     return in_features * out_features * 2
+
+
+def cosine_annealing(step, total_steps, initial_budget, final_budget):
+    cos_inner = (math.pi * (step % total_steps)) / total_steps
+    return final_budget + (initial_budget - final_budget) / 2 * (math.cos(cos_inner) + 1)
+
+
+def update_budget(args, epoch, model):
+    budget, temp = 0, 0
+    if args.strategy == 'anneal':
+        budget = cosine_annealing(epoch, args.stop_epochs, args.initial_budget, args.final_budget)
+    elif args.strategy == 'step':
+        budget = args.initial_budget if epoch < args.stop_epochs else args.final_budget
+    model.update_budget(budget)
+
+    if args.strategy == 'anneal':
+        temp = cosine_annealing(epoch, args.stop_epochs, args.initial_temp, args.final_temp)
+    elif args.strategy == 'step':
+        temp = args.initial_temp if epoch < args.stop_epochs else args.final_temp
+    model.update_temperature(temp)
+
+    args.reg = True if epoch >= args.stop_epochs else False

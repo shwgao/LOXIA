@@ -1,4 +1,12 @@
 /.idea
-/Dataset
 /__pycache__
 /checkpoints
+/logs/
+/whole_model/
+/checkpoints-v0
+/inference_one_round.py
+/inference_one_round_sar.py
+/visual_FS.py
+/whole_model.zip
+/draws.py
+/.gitignore

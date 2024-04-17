@@ -1,54 +1,61 @@
+import os
+import h5py
 import numpy as np
 import torch
 import torch.utils.data.dataset as dataset
-from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader
 
-from utils import delete_constant_columns, reshape_vector, Load_Dataset_Surrogate
 
+class EMDenoiseTrainingDataset(torch.utils.data.Dataset):
+    """
+    A generic zipped dataset loader for EMDenoiser
+    """
 
-def read_data(input_file, output_file):
-    LengthOfDataset = 2329104
-    NUM_ATOMS = 35
-    NUM_DIMENSIONS = 1
-    with open(input_file, "r") as f:
-        xyz = [
-            float(f.readline())
-            for _ in range(NUM_ATOMS * NUM_DIMENSIONS * LengthOfDataset)
-        ]
+    def __init__(self, noisy_file_path, clean_file_path):
+        self.noisy_file_path = noisy_file_path
+        self.clean_file_path = clean_file_path
+        self.dataset_len = 0
+        self.noisy_dataset = None
+        self.clean_dataset = None
 
-    # Create X and Y lists using list comprehension
-    X = reshape_vector(xyz, NUM_ATOMS, NUM_DIMENSIONS, LengthOfDataset)
+        with h5py.File(self.noisy_file_path, 'r') as hdf5_file:
+            len_noisy = len(hdf5_file["images"])
+        with h5py.File(self.clean_file_path, 'r') as hdf5_file:
+            len_clean = len(hdf5_file["images"])
 
-    with open(output_file, "r") as f:
-        out = [float(f.readline()) for _ in range(LengthOfDataset * 5)]
+        with h5py.File(self.noisy_file_path, 'r') as hdf5_file:
+            self.noisy_dataset = torch.from_numpy(np.array(hdf5_file["images"]))
+        with h5py.File(self.clean_file_path, 'r') as hdf5_file:
+            self.clean_dataset = torch.from_numpy(np.array(hdf5_file["images"]))
 
-    NUM_ATOMS = 5
-    NUM_DIMENSIONS = 1
+        # swap axes to get the correct shape
+        self.noisy_dataset = torch.swapaxes(self.noisy_dataset, 3, 1)
+        self.clean_dataset = torch.swapaxes(self.clean_dataset, 3, 1)
 
-    X = delete_constant_columns(np.array(X))
-    scaler = StandardScaler()
-    X_normalized = scaler.fit_transform(X)
+        self.dataset_len = min(len_clean, len_noisy)
 
-    Y = reshape_vector(out, NUM_ATOMS, NUM_DIMENSIONS, LengthOfDataset)
+    def __len__(self):
+        return self.dataset_len
 
-    prime_X = np.array(X_normalized)
-    prime_Y = np.array(Y)
-    return prime_X, prime_Y
+    def __getitem__(self, index):
+        if self.noisy_dataset is None:
+            self.noisy_dataset = h5py.File(self.noisy_file_path, 'r')["images"]
+        if self.clean_dataset is None:
+            self.clean_dataset = h5py.File(self.clean_file_path, 'r')["images"]
+        return self.noisy_dataset[index], self.clean_dataset[index]
 
 
 def get_loader(batch_size=1024, val_only=False):
-    input_file = "./Dataset/CFD/input.txt"
-    output_file = "./Dataset/CFD/output.txt"
-
-    data_set = Load_Dataset_Surrogate(input_file, output_file, read_data, application='CFD', normalize=False)
-
-    train_set_len = int(0.8 * len(data_set))
-    train_set, test_set = dataset.random_split(data_set, [train_set_len, len(data_set) - train_set_len],
-                                               generator=torch.Generator().manual_seed(42))
+    base_dataset_dir = '/aul/homes/sgao014/sciml_bench/datasets/em_graphene_sim/train'
+    noisy_path = os.path.join(base_dataset_dir, 'graphene_img_noise.h5')
+    clean_path = os.path.join(base_dataset_dir, 'graphene_img_clean.h5')
+    train_set = EMDenoiseTrainingDataset(noisy_path, clean_path)
+    base_dataset_dir = '/aul/homes/sgao014/sciml_bench/datasets/em_graphene_sim/test'
+    noisy_path = os.path.join(base_dataset_dir, 'graphene_img_noise.h5')
+    clean_path = os.path.join(base_dataset_dir, 'graphene_img_clean.h5')
+    test_set = EMDenoiseTrainingDataset(noisy_path, clean_path)
 
     val_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4,
-                              pin_memory=True) if not val_only else None
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True) if not val_only else None
 
     return train_loader, val_loader
